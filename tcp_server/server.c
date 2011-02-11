@@ -1,13 +1,18 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <signal.h>
 #include <string.h>
 #include <sys/poll.h>
 #include <server.h>
+#include <server_common.h>
 #include <packet.h>
+#include <conn_queue.h>
+#include <packet_queue.h>
 
 struct server {
 	struct conn_queue *cq_conn;
@@ -17,12 +22,51 @@ struct server {
 	int bquit;
 } srv ;
 
-void init_server(struct server *srv)
+int _init_server_netw(struct server *srv)
 {
+	struct sockaddr_in addr;
+	int n;
+	srv->listen_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+	if (srv->listen_fd == -1)
+		return -1;
+	memset(&addr, 0, sizeof addr);
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(SERVER_TCP_PORT);
+	addr.sin_addr.s_addr = INADDR_ANY;
+	n = bind(srv->listen_fd, (struct sockaddr *)&addr, sizeof(addr));
+	if (n == -1)
+		return -1;
+	n = listen(srv->listen_fd, 10);
+	if (n == -1)
+		return -1;
+	return 0;
+}
+
+void _destroy_server_netw(struct server *srv)
+{
+	close(srv->listen_fd);
+
+	struct conn *conn = srv->cq_conn->cq_last;
+	while (conn != NULL) {
+		shutdown(conn->cn_fd, SHUT_RDWR);
+		close(conn->cn_fd);
+		conn = conn->cq_next;
+	}
+}
+
+int init_server(struct server *srv)
+{
+	int n;
+
+	struct conn_queue *cq;
 	srv->cq_conn = conn_queue_new();
 	srv->pq_client = packet_queue_new();
 	srv->ctl_fd = open_user_chan();
 	srv->bquit = 0;
+	n = _init_server_netw(srv);
+	if (n == -1)
+		return -1;
+	return 0;
 }
 
 void destroy_server(struct server *srv)
@@ -106,8 +150,8 @@ void on_sigint(int signo)
 int main(int argc, char *argv[])
 {
 	signal(SIGINT, on_sigint);
-	init_server(&srv);
-	serve(&srv);
+	if (init_server(&srv) == 0)
+		serve(&srv);
 	destroy_server(&srv);
 	return 0;
 }
